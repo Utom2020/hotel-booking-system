@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once '../config/db.php';
+require_once '../config/locking.php';
 
 if (!isset($_SESSION['user_id'])) {
     header("Location: login.php");
@@ -22,12 +23,22 @@ $stmt = $conn->prepare(
 );
 $stmt->bind_param("i", $room_id);
 $stmt->execute();
-$room = $stmt->get_result()->fetch_assoc();
+$room = $stmt->get_result()->fetch_assoc();  
 
 if (!$room) {
     header("Location: ../index.php");
     exit();
 }
+
+// Get current version from room_availability for optimistic locking
+$vstmt = $conn->prepare(
+    "SELECT version FROM room_availability WHERE room_id = ?"
+);
+$vstmt->bind_param("i", $room_id);
+$vstmt->execute();
+$vresult = $vstmt->get_result()->fetch_assoc();
+$current_version = $vresult ? $vresult['version'] : 0;
+$vstmt->close();
 
 $d1     = new DateTime($checkin);
 $d2     = new DateTime($checkout);
@@ -39,66 +50,140 @@ $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $user_id = $_SESSION['user_id'];
 
-    // ── PESSIMISTIC LOCKING ──────────────────────────────────────
-    $conn->begin_transaction();
+    if (LOCKING_STRATEGY === 'pessimistic') {
 
-    try {
-        // Lock the room row to prevent other transactions
-        $lock = $conn->prepare(
-            "SELECT room_id FROM rooms 
-             WHERE room_id = ? AND is_available = 1 
-             FOR UPDATE"
-        );
-        $lock->bind_param("i", $room_id);
-        $lock->execute();
-        $locked = $lock->get_result()->fetch_assoc();
+        // ── PESSIMISTIC LOCKING ──────────────────────────────────
+        $conn->begin_transaction();
 
-        if (!$locked) {
-            $conn->rollback();
-            header("Location: conflict.php");
+        try {
+            // Lock the room row to prevent other transactions
+            $lock = $conn->prepare(
+                "SELECT room_id FROM rooms 
+                 WHERE room_id = ? AND is_available = 1 
+                 FOR UPDATE"
+            );
+            $lock->bind_param("i", $room_id);
+            $lock->execute();
+            $locked = $lock->get_result()->fetch_assoc();
+
+            if (!$locked) {
+                $conn->rollback();
+                header("Location: conflict.php");
+                exit();
+            }
+
+            // Check no confirmed booking overlaps these dates
+            $check = $conn->prepare(
+                "SELECT booking_id FROM bookings 
+                 WHERE room_id = ? 
+                 AND status = 'confirmed'
+                 AND check_in_date  < ? 
+                 AND check_out_date > ?"
+            );
+            $check->bind_param("iss", $room_id, $checkout, $checkin);
+            $check->execute();
+            $check->store_result();
+
+            if ($check->num_rows > 0) {
+                $conn->rollback();
+                header("Location: conflict.php");
+                exit();
+            }
+
+            // Safe to book — insert the booking
+            $insert = $conn->prepare(
+                "INSERT INTO bookings 
+                 (user_id, room_id, check_in_date, check_out_date, total_price, status) 
+                 VALUES (?, ?, ?, ?, ?, 'confirmed')"
+            );
+            $insert->bind_param(
+                "iissd",
+                $user_id, $room_id, $checkin, $checkout, $total
+            );
+            $insert->execute();
+            $booking_id = $conn->insert_id;
+
+            // Update room_availability status
+            $upd = $conn->prepare(
+                "UPDATE room_availability SET status = 'booked' WHERE room_id = ?"
+            );
+            $upd->bind_param("i", $room_id);
+            $upd->execute();
+
+            $conn->commit();
+
+            header("Location: confirm.php?booking_id=" . $booking_id);
             exit();
+
+        } catch (Exception $e) {
+            $conn->rollback();
+            $error = 'Something went wrong. Please try again.';
         }
 
-        // Check no confirmed booking overlaps these dates
-        $check = $conn->prepare(
-            "SELECT booking_id FROM bookings 
-             WHERE room_id = ? 
-             AND status = 'confirmed'
-             AND check_in_date  < ? 
-             AND check_out_date > ?"
-        );
-        $check->bind_param("iss", $room_id, $checkout, $checkin);
-        $check->execute();
-        $check->store_result();
+    } else {
 
-        if ($check->num_rows > 0) {
-            $conn->rollback();
-            header("Location: conflict.php");
+        // ── OPTIMISTIC LOCKING ───────────────────────────────────
+        $posted_version = isset($_POST['version']) ? (int)$_POST['version'] : -1;
+
+        $conn->begin_transaction();
+
+        try {
+            // Check no confirmed booking overlaps these dates
+            $check = $conn->prepare(
+                "SELECT booking_id FROM bookings 
+                 WHERE room_id = ? 
+                 AND status = 'confirmed'
+                 AND check_in_date  < ? 
+                 AND check_out_date > ?"
+            );
+            $check->bind_param("iss", $room_id, $checkout, $checkin);
+            $check->execute();
+            $check->store_result();
+
+            if ($check->num_rows > 0) {
+                $conn->rollback();
+                header("Location: conflict.php");
+                exit();
+            }
+
+            // Try to update room_availability only if version matches
+            $upd = $conn->prepare(
+                "UPDATE room_availability 
+                 SET status = 'booked', version = version + 1
+                 WHERE room_id = ? AND version = ?"
+            );
+            $upd->bind_param("ii", $room_id, $posted_version);
+            $upd->execute();
+
+            if ($upd->affected_rows === 0) {
+                // Version mismatch — another user booked first
+                $conn->rollback();
+                header("Location: conflict.php");
+                exit();
+            }
+
+            // Safe to book — insert the booking
+            $insert = $conn->prepare(
+                "INSERT INTO bookings 
+                 (user_id, room_id, check_in_date, check_out_date, total_price, status) 
+                 VALUES (?, ?, ?, ?, ?, 'confirmed')"
+            );
+            $insert->bind_param(
+                "iissd",
+                $user_id, $room_id, $checkin, $checkout, $total
+            );
+            $insert->execute();
+            $booking_id = $conn->insert_id;
+
+            $conn->commit();
+
+            header("Location: confirm.php?booking_id=" . $booking_id);
             exit();
+
+        } catch (Exception $e) {
+            $conn->rollback();
+            $error = 'Something went wrong. Please try again.';
         }
-
-        // Safe to book — insert the booking
-        $insert = $conn->prepare(
-            "INSERT INTO bookings 
-             (user_id, room_id, check_in_date, check_out_date, total_price, status) 
-             VALUES (?, ?, ?, ?, ?, 'confirmed')"
-        );
-        $insert->bind_param(
-            "iissd",
-            $user_id, $room_id, $checkin, $checkout, $total
-        );
-        $insert->execute();
-        $booking_id = $conn->insert_id;
-
-        $conn->commit();
-
-        // Redirect to confirmation page
-        header("Location: confirm.php?booking_id=" . $booking_id);
-        exit();
-
-    } catch (Exception $e) {
-        $conn->rollback();
-        $error = 'Something went wrong. Please try again.';
     }
 }
 ?>
@@ -205,6 +290,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             justify-content: center;
             font-size: 50px;
         }
+        .strategy-badge {
+            display: inline-block;
+            background: #f0c040;
+            color: #1F3864;
+            font-size: 12px;
+            font-weight: bold;
+            padding: 4px 10px;
+            border-radius: 20px;
+            margin-bottom: 16px;
+        }
     </style>
 </head>
 <body>
@@ -213,6 +308,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <h1>🏨 Hotel Booking System</h1>
     <div>
         <a href="../index.php">Search</a>
+        <a href="my_bookings.php">My Bookings</a>
         <a href="logout.php">Logout</a>
     </div>
 </div>
@@ -234,6 +330,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
 
         <div class="card-body">
+
+            <div class="strategy-badge">
+                Strategy: <?php echo ucfirst(LOCKING_STRATEGY); ?> Locking
+            </div>
 
             <?php if ($error): ?>
                 <div class="error"><?php echo htmlspecialchars($error); ?></div>
@@ -276,6 +376,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <input type="hidden" name="room_id"  value="<?php echo $room_id; ?>">
                 <input type="hidden" name="checkin"  value="<?php echo htmlspecialchars($checkin); ?>">
                 <input type="hidden" name="checkout" value="<?php echo htmlspecialchars($checkout); ?>">
+                <input type="hidden" name="version"  value="<?php echo $current_version; ?>">
                 <button type="submit" class="btn-confirm">
                     ✅ Confirm Booking
                 </button>
