@@ -92,6 +92,21 @@ if (!isset($_SESSION['user_id'])) {
         <button type="submit">Search Rooms</button>
     </form>
 </div>
+<footer style="
+        text-align: center;
+        padding: 20px 20px;
+        margin-top: 60px;
+        font-size: 12px;
+        color: #aaa;
+        border-top: 1px solid #e8e8e8;
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: #f0f2f7;
+    ">
+        &copy; 2026 Hotel Booking System &nbsp;|&nbsp; University of Hertfordshire MSc Project
+    </footer>
 
 </body>
 </html>

@@ -3,7 +3,7 @@
 // test_concurrency.php
 // Concurrency Control Evaluation Script
 // Multi-User Hotel Booking System — MSc Project
-// University of Hertfordshire — Ikechukwu Joshua
+// University of Hertfordshire — stella udoh w.
 // ============================================================
 
 ini_set('display_errors', 1);
@@ -129,7 +129,7 @@ function runPessimisticTest($conn) {
 
 // ── OPTIMISTIC LOCKING TEST ──────────────────────────────────
 function runOptimisticTest($conn) {
-    $results = [];
+    $results = []; 
 
     for ($i = 1; $i <= NUM_REQUESTS; $i++) {
         $start   = microtime(true);
@@ -217,7 +217,7 @@ function runOptimisticTest($conn) {
     }
 
     return $results;
-}
+}  
 
 // ── CALCULATE SUMMARY METRICS ────────────────────────────────
 function calcMetrics($results) {
@@ -419,6 +419,7 @@ $optimisticMetrics = calcMetrics($optimisticResults);
         </div>
     </div>
 
+
     <div class="summary-card">
         <h3>⚡ Optimistic Locking</h3>
         <div class="metric-row">
@@ -454,7 +455,7 @@ $optimisticMetrics = calcMetrics($optimisticResults);
             <span class="metric-value"><?php echo $optimisticMetrics['throughput']; ?> req/s</span>
         </div>
         <div class="metric-row">
-            <span class="metric-label">Retries</span>
+         <span class="metric-label">Double Bookings</span>
             <span class="metric-value"><?php echo $optimisticMetrics['retries']; ?></span>
         </div>
     </div>
@@ -476,13 +477,33 @@ $optimisticMetrics = calcMetrics($optimisticResults);
             <td>Successful Bookings</td>
             <td><?php echo $pessimisticMetrics['successful']; ?></td>
             <td><?php echo $optimisticMetrics['successful']; ?></td>
-            <td>—</td>
+            <td class="winner">
+<?php
+if ($pessimisticMetrics['successful'] > $optimisticMetrics['successful']) {
+    echo 'Pessimistic ✅';
+} elseif ($optimisticMetrics['successful'] > $pessimisticMetrics['successful']) {
+    echo 'Optimistic ✅';
+} else {
+    echo 'Equal';
+}
+?>
+</td>
         </tr>
         <tr>
             <td>Conflicts Detected</td>
             <td><?php echo $pessimisticMetrics['conflicts']; ?></td>
             <td><?php echo $optimisticMetrics['conflicts']; ?></td>
-            <td>—</td>
+            <td class="winner">
+<?php
+if ($pessimisticMetrics['successful'] > $optimisticMetrics['successful']) {
+    echo 'Pessimistic ✅';
+} elseif ($optimisticMetrics['successful'] > $pessimisticMetrics['successful']) {
+    echo 'Optimistic ✅';
+} else {
+    echo 'Equal';
+}
+?>
+</td>
         </tr>
         <tr>
             <td>Double Bookings</td>
@@ -572,7 +593,7 @@ $optimisticMetrics = calcMetrics($optimisticResults);
 </table>
 
 <footer>
-    &copy; 2026 Hotel Booking System — University of Hertfordshire MSc Project | Concurrency Evaluation Script
+    &copy; 2026 Hotel Booking System — University of Hertfordshire MSc Project
 </footer>
 
 </body>
