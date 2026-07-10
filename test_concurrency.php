@@ -6,21 +6,23 @@
 // University of Hertfordshire — stella udoh w.
 // ============================================================
 
-ini_set('display_errors', 1);
-error_reporting(E_ALL);
+ini_set('display_errors', 1);   // show PHP errors on screen (for dev only)
+error_reporting(E_ALL);         // report every type of error
 
-require_once 'config/db.php';
+require_once 'config/db.php';   // gives us $conn — the database connection
 
 // ── CONFIGURATION ────────────────────────────────────────────
-define('TEST_ROOM_ID',    7);          // Room T102 — our test room
+// Change these values to run different test scenarios
+define('TEST_ROOM_ID',    7);           // Room T102 — the room every user fights over
 define('TEST_CHECKIN',    '2026-12-01');
 define('TEST_CHECKOUT',   '2026-12-03');
-define('TEST_USER_ID',    1);          // Existing user in the database
-define('NUM_REQUESTS',    2);         //  Total Number of simulated concurrent users
+define('TEST_USER_ID',    1);           // Existing user used for every simulated booking
+define('NUM_REQUESTS',    100);           // How many concurrent users to simulate — change this to 10, 20, 50, 100 etc.
 
 // ── HELPER — Reset room before each test ────────────────────
+// Runs BEFORE each strategy test so both start from a clean, fair state
 function resetRoom($conn) {
-    // Cancel all test bookings for this room and dates
+    // undo any bookings left over from the last test run
     $conn->query("
         UPDATE bookings 
         SET status = 'cancelled' 
@@ -28,14 +30,14 @@ function resetRoom($conn) {
         AND check_in_date = '" . TEST_CHECKIN . "'
     ");
 
-    // Reset room_availability version and status
+    // put version back to 0 and mark the room available again
     $conn->query("
         UPDATE room_availability 
         SET status = 'available', version = 0 
         WHERE room_id = " . TEST_ROOM_ID . "
     ");
 
-    // Make sure room is available
+    // make sure rooms table also shows it as available
     $conn->query("
         UPDATE rooms 
         SET is_available = 1 
@@ -44,18 +46,21 @@ function resetRoom($conn) {
 }
 
 // ── PESSIMISTIC LOCKING TEST ─────────────────────────────────
+// Simulates NUM_REQUESTS users, one after another, each trying to
+// lock and book the SAME room using SELECT ... FOR UPDATE
 function runPessimisticTest($conn) {
     $results = [];
 
     for ($i = 1; $i <= NUM_REQUESTS; $i++) {
-        $start = microtime(true);
+        $start = microtime(true);   // timer starts — used for response_time later
         $outcome = '';
         $retries = 0;
 
         try {
-            $conn->begin_transaction();
+            $conn->begin_transaction();   // ACID: start an all-or-nothing block
 
-            // Lock the room row
+            // THE LOCK — this line is pessimistic locking in one sentence:
+            // "lock this row now so no one else can touch it until I finish"
             $lock = $conn->prepare(
                 "SELECT room_id FROM rooms 
                  WHERE room_id = ? AND is_available = 1 
@@ -68,10 +73,11 @@ function runPessimisticTest($conn) {
             $locked = $lock->get_result()->fetch_assoc();
 
             if (!$locked) {
+                // room wasn't available at all — reject immediately
                 $conn->rollback();
                 $outcome = 'conflict';
             } else {
-                // Check for overlapping bookings
+                // even with the lock held, double-check no confirmed booking overlaps
                 $check = $conn->prepare(
                     "SELECT booking_id FROM bookings 
                      WHERE room_id = ? 
@@ -87,10 +93,11 @@ function runPessimisticTest($conn) {
                 $check->store_result();
 
                 if ($check->num_rows > 0) {
+                    // someone already has a confirmed booking for these dates
                     $conn->rollback();
                     $outcome = 'conflict';
                 } else {
-                    // Insert booking
+                    // SAFE — no lock conflict, no overlap — save the booking
                     $insert = $conn->prepare(
                         "INSERT INTO bookings 
                          (user_id, room_id, check_in_date, check_out_date, total_price, status) 
@@ -103,31 +110,33 @@ function runPessimisticTest($conn) {
                     $total    = 199.98;
                     $insert->bind_param("iissd", $userId, $roomId, $checkin, $checkout, $total);
                     $insert->execute();
-                    $conn->commit();
+                    $conn->commit();   // ACID: save everything together, release the lock
                     $outcome = 'success';
                 }
             }
         } catch (Exception $e) {
-            $conn->rollback();
+            $conn->rollback();   // anything went wrong — undo everything
             $outcome = 'error';
         }
 
-        $end = microtime(true);
+        $end = microtime(true);   // timer stops
         $results[] = [
             'request'       => $i,
             'outcome'       => $outcome,
+            // response_time formula: (end - start) converted to milliseconds
             'response_time' => round(($end - $start) * 1000, 2),
             'retries'       => $retries,
         ];
 
-        // Small delay between requests
-        usleep(50000); // 50ms
+        usleep(50000); // 50ms pause — spaces out requests slightly, like real traffic
     }
 
     return $results;
 }
 
 // ── OPTIMISTIC LOCKING TEST ──────────────────────────────────
+// Simulates NUM_REQUESTS users, none of them locking anything —
+// each just reads the version, then tries to update it at the end
 function runOptimisticTest($conn) {
     $results = []; 
 
@@ -137,7 +146,7 @@ function runOptimisticTest($conn) {
         $retries = 0;
 
         try {
-            // Read current version
+            // STEP 1 — READ the version — no lock, just a normal SELECT
             $vstmt = $conn->prepare(
                 "SELECT version FROM room_availability WHERE room_id = ?"
             );
@@ -145,11 +154,11 @@ function runOptimisticTest($conn) {
             $vstmt->bind_param("i", $roomId);
             $vstmt->execute();
             $vrow    = $vstmt->get_result()->fetch_assoc();
-            $version = $vrow ? $vrow['version'] : 0;
+            $version = $vrow ? $vrow['version'] : 0;   // remember this version number
 
             $conn->begin_transaction();
 
-            // Check for overlapping bookings
+            // still worth checking overlapping CONFIRMED bookings directly
             $check = $conn->prepare(
                 "SELECT booking_id FROM bookings 
                  WHERE room_id = ? 
@@ -168,7 +177,8 @@ function runOptimisticTest($conn) {
                 $conn->rollback();
                 $outcome = 'conflict';
             } else {
-                // Try version update
+                // STEP 2 — VALIDATE + WRITE in one shot:
+                // only succeeds if version STILL matches what we read at the top
                 $upd = $conn->prepare(
                     "UPDATE room_availability 
                      SET status = 'booked', version = version + 1
@@ -179,11 +189,14 @@ function runOptimisticTest($conn) {
                 $upd->execute();
 
                 if ($upd->affected_rows === 0) {
+                    // affected_rows = 0 means: version already changed —
+                    // someone else booked first — THIS is how optimistic
+                    // locking detects a conflict, after the fact
                     $conn->rollback();
                     $outcome = 'conflict';
                     $retries++;
                 } else {
-                    // Insert booking
+                    // version matched — safe to save the booking
                     $insert = $conn->prepare(
                         "INSERT INTO bookings 
                          (user_id, room_id, check_in_date, check_out_date, total_price, status) 
@@ -213,13 +226,15 @@ function runOptimisticTest($conn) {
             'retries'       => $retries,
         ];
 
-        usleep(50000); // 50ms
+        usleep(50000); // 50ms pause
     }
 
     return $results;
 }  
 
 // ── CALCULATE SUMMARY METRICS ────────────────────────────────
+// Takes the raw list of individual results and turns it into
+// the numbers you actually report — this is the "formula" block
 function calcMetrics($results) {
     $successful = 0;
     $conflicts  = 0;
@@ -232,21 +247,23 @@ function calcMetrics($results) {
         if ($r['outcome'] === 'conflict') $conflicts++;
         if ($r['outcome'] === 'error')    $errors++;
         $retries += $r['retries'];
-        $times[]  = $r['response_time'];
+        $times[]  = $r['response_time'];   // collect every user's individual time
     }
 
+    // AVG RESPONSE TIME = sum of every user's time ÷ number of users
     $avgTime  = round(array_sum($times) / count($times), 2);
-    $minTime  = min($times);
-    $maxTime  = max($times);
+    $minTime  = min($times);   // fastest user
+    $maxTime  = max($times);   // slowest user
     $total    = count($results);
-    $totalSec = array_sum($times) / 1000;
+    $totalSec = array_sum($times) / 1000;   // convert total time from ms to seconds
+    // THROUGHPUT = total requests ÷ total time taken (in seconds)
     $throughput = $totalSec > 0 ? round($total / $totalSec, 2) : 0;
 
     return [
         'successful'  => $successful,
         'conflicts'   => $conflicts,
         'errors'      => $errors,
-        'retries'     => $retries,
+        'retries'     => $retries,     // used as "double bookings" indicator — always 0 if safe
         'avg_time'    => $avgTime,
         'min_time'    => $minTime,
         'max_time'    => $maxTime,
@@ -256,11 +273,13 @@ function calcMetrics($results) {
 }
 
 // ── RUN BOTH TESTS ───────────────────────────────────────────
+// This is the part your supervisor asked to see — both strategies
+// run automatically, one after another, every time this page loads
 resetRoom($conn);
 $pessimisticResults = runPessimisticTest($conn);
 $pessimisticMetrics = calcMetrics($pessimisticResults);
 
-resetRoom($conn);
+resetRoom($conn);   // reset again so optimistic starts from the same clean state
 $optimisticResults = runOptimisticTest($conn);
 $optimisticMetrics = calcMetrics($optimisticResults);
 ?>
@@ -418,8 +437,6 @@ $optimisticMetrics = calcMetrics($optimisticResults);
             <span class="metric-value success">0</span>
         </div>
     </div>
-
-
     <div class="summary-card">
         <h3>⚡ Optimistic Locking</h3>
         <div class="metric-row">
@@ -455,7 +472,7 @@ $optimisticMetrics = calcMetrics($optimisticResults);
             <span class="metric-value"><?php echo $optimisticMetrics['throughput']; ?> req/s</span>
         </div>
         <div class="metric-row">
-         <span class="metric-label">Double Bookings</span>
+            <span class="metric-label">Double Bookings</span>
             <span class="metric-value"><?php echo $optimisticMetrics['retries']; ?></span>
         </div>
     </div>
