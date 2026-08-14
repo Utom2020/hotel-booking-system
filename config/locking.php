@@ -1,3 +1,3 @@
 <?php
-define('LOCKING_STRATEGY', 'optimistic');
+define('LOCKING_STRATEGY', 'optimistics');
 ?>

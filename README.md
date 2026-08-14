@@ -4,7 +4,6 @@
 
 A PHP and MySQL web application that solves the classic **double-booking problem**: when two or more users try to book the same hotel room at the same time. This project implements and experimentally compares two industry-standard concurrency control strategies — **pessimistic locking** and **optimistic locking** — to guarantee only one booking ever succeeds, no matter how many users compete for the same room.
 
----
 
 ## 🚀 Features
 

@@ -27,7 +27,7 @@ $room = $stmt->get_result()->fetch_assoc();
 
 if (!$room) {
     header("Location: ../index.php");
-    exit();
+    exit();  
 }
 
 // Get current version from room_availability for optimistic locking
