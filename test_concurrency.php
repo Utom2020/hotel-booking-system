@@ -17,19 +17,19 @@ define('TEST_ROOM_ID',    7);           // Room T102 — the room every user fig
 define('TEST_CHECKIN',    '2026-12-01');
 define('TEST_CHECKOUT',   '2026-12-03');
 define('TEST_USER_ID',    1);           // Existing user used for every simulated booking
-define('NUM_REQUESTS',    150
+define('NUM_REQUESTS',    170
 );           // How many concurrent users to simulate — change this to 10, 20, 50, 100 etc.
 
 // ── ADAPTIVE LOCKING STRATEGY ────────────────────────────────
 // Automatically selects the best strategy based on concurrent user load
 // Justified by evaluation results showing crossover point between 20 and 50 users
-if (NUM_REQUESTS < 50) {
-    define('ADAPTIVE_STRATEGY', 'pessimistic');
-    $adaptiveReason = 'Below 50 users — Pessimistic locking selected for faster response time and lower worst-case latency';
-} else {
+if (NUM_REQUESTS < 30) {
     define('ADAPTIVE_STRATEGY', 'optimistic');
-    $adaptiveReason = 'At or above 50 users — Optimistic locking selected for higher throughput and better average response time';
-}// ── HELPER — Reset room before each test ────────────────────
+    $adaptiveReason = 'Below 30 users — Optimistic locking selected for higher throughput at lower user loads';
+} else {
+    define('ADAPTIVE_STRATEGY', 'pessimistic');
+    $adaptiveReason = 'At or above 30 users — Pessimistic locking selected for better performance and lower worst-case latency';
+} // ── HELPER — Reset room before each test ────────────────────
 // Runs BEFORE each strategy test so both start from a clean, fair state
     
 
@@ -222,7 +222,7 @@ function runOptimisticTest($conn) {
 }  
 
 // ── RUN BOTH TESTS ───────────────────────────────────────────
-// This is the part your supervisor asked to see — both strategies
+// This is the part my supervisor asked to see — both strategies
 // run automatically, one after another, every time this page loads
 function calcMetrics($results) {
     $times = array_column($results, 'response_time');
