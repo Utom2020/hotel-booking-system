@@ -78,7 +78,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 $stmt = $conn->prepare("INSERT INTO rooms (room_number, room_type, price_per_night, description, image) VALUES (?, ?, ?, ?, ?)");
                 $stmt->bind_param("ssdss", $room_number, $room_type, $price, $description, $image_name);
                 if ($stmt->execute()) {
-                    $message = 'Room added successfully!';
+                   $new_room_id = $conn->insert_id;
+for ($i = 0; $i < 365; $i++) {
+    $date = date('Y-m-d', strtotime("+$i days"));
+    $conn->query("INSERT INTO room_availability (room_id, available_date, status, version) VALUES ($new_room_id, '$date', 'available', 0)");
+} $message = 'Room added successfully!';
                 } else {
                     $error = 'Failed to add room. Please try again.';
                 }

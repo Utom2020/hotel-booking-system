@@ -20,10 +20,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $user   = $result->fetch_assoc();
 
         if ($user && password_verify($password, $user['password_hash'])) {
+            session_destroy();
+            session_start();
             $_SESSION['user_id'] = $user['user_id'];
             $_SESSION['name']    = $user['name'];
             $_SESSION['role']    = $user['role'];
-            header("Location: ../index.php");
+            if ($_SESSION['role'] === 'admin') {
+                header("Location: ../admin/add_room.php");
+            } else {
+                header("Location: ../index.php");
+            }
             exit();
         } else {
             $error = 'Invalid email or password. Please try again.';

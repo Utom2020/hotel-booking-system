@@ -1,5 +1,6 @@
 <?php
 session_start();
+
 require_once '../config/db.php';
 
 $error = '';
@@ -28,6 +29,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             // Hash the password
             $password_hash = password_hash($password, PASSWORD_BCRYPT);
+            error_log("Password hash: " . $password_hash);
 
             // Insert new user
             $stmt = $conn->prepare(
