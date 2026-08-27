@@ -17,7 +17,7 @@ define('TEST_ROOM_ID',    7);           // Room T102 — the room every user fig
 define('TEST_CHECKIN',    '2026-12-01');
 define('TEST_CHECKOUT',   '2026-12-03');
 define('TEST_USER_ID',    1);           // Existing user used for every simulated booking
-define('NUM_REQUESTS',    170
+define('NUM_REQUESTS',    50
 );           // How many concurrent users to simulate — change this to 10, 20, 50, 100 etc.
 
 // ── ADAPTIVE LOCKING STRATEGY ────────────────────────────────
